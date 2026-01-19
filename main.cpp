@@ -4,11 +4,12 @@
 #include <sstream>
 #include <cstdlib>
 #include <filesystem>
-#include <unistd.h>
+#include <unistd.h> //execve
 #include <sys/types.h>
-#include <sys/wait.h>
+#include <sys/wait.h> //wait
 
 bool findExecFile(std::string, std::string);
+std::vector<std::string> parseUserArguments(std::string);
 
 int main() {
   // Flush after every std::cout / std:cerr
@@ -27,12 +28,16 @@ int main() {
     std::string paramStr = "";
     std::istringstream parseUserCommand(userCommandInput);
 
-    parseUserCommand >> cmd;
+    parseUserCommand >> cmd; // extract command
     if (cmd == "exit") return 0;
+    std::getline(parseUserCommand >> std::ws, paramStr); // extract arguments
 
-    std::getline(parseUserCommand >> std::ws, paramStr);
-    if(cmd == "echo") std::cout << paramStr << std::endl;
-    else if(cmd == "type") {
+    if(cmd == "echo") {
+      std::vector<std::string> echoParams = parseUserArguments(paramStr);
+
+      for(const std::string &str : echoParams) std::cout << str << " ";
+      std::cout << std::endl;
+    } else if(cmd == "type") {
       bool foundcmd = false;
       std::string parameterCmd = "";
       std::istringstream parseTemp(paramStr);
@@ -60,26 +65,21 @@ int main() {
         }
       }
     } else {
-      std::istringstream parseProgram_Args(userCommandInput);
+      std::vector<std::string> parameters = parseUserArguments(paramStr);
       std::vector<std::string> argStrings;
-      std::string temp = "";
+      argStrings.push_back(cmd);
       
       bool foundcmd = false;
-      if(parseProgram_Args >> temp) {
-        const char* pathVal = std::getenv("PATH");
-        std::string Path = "";
-        std::istringstream pathParse(pathVal);
+      const char* pathVal = std::getenv("PATH");
+      std::string Path = "";
+      std::istringstream pathParse(pathVal);
 
-        while(!foundcmd && std::getline(pathParse, Path, ':')) {
-            foundcmd = findExecFile(Path, temp);
-          }
+      while(!foundcmd && std::getline(pathParse, Path, ':')) {
+        foundcmd = findExecFile(Path, argStrings[0]);
       }
-
+      
       if(foundcmd) {
-        argStrings.push_back(temp);
-        while(parseProgram_Args >> temp) {
-          argStrings.push_back(temp);
-        }
+        argStrings.insert(argStrings.end(), parameters.begin(), parameters.end());
         
         std::vector<char*> programArgs;
         for(auto &strptr : argStrings) {
@@ -90,7 +90,7 @@ int main() {
         pid_t pid = fork();
         if(pid == 0) execvp(programArgs[0], programArgs.data());
         else if(pid > 0) wait(NULL);
-      } else std::cout << temp << ": command not found" << std::endl;
+      } else std::cout << argStrings[0] << ": command not found" << std::endl;
     }
   }
   return 0;
@@ -115,3 +115,35 @@ bool findExecFile(std::string envPath, std::string cmdName) {
 
   return fileExists;
 }
+
+std::vector<std::string> parseUserArguments(std::string userParamStr) {
+  std::vector<std::string> paramVector;
+  std::string argExtract = "";
+  bool singlequote = false;
+
+  for(size_t i=0; i<userParamStr.size(); i++) {
+    while(userParamStr[i] == '\'') {
+      singlequote = !singlequote;
+      i++;
+    }
+
+    if(singlequote && userParamStr[i] == '\'') {
+      paramVector.push_back(argExtract);
+      argExtract = "";
+    }
+
+    if(singlequote) argExtract += userParamStr[i];
+    else {
+      if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
+        paramVector.push_back(argExtract);
+        argExtract = "";
+        while(i + 1 < userParamStr.size() && (userParamStr[i + 1] == ' ' || userParamStr[i + 1] == '\t')) i++;
+      } else argExtract += userParamStr[i];
+    }
+  }
+  paramVector.push_back(argExtract);
+
+  return paramVector;
+}
+
+

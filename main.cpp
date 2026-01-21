@@ -120,25 +120,53 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
   std::vector<std::string> paramVector;
   std::string argExtract = "";
   bool singlequote = false;
+  bool doublequote = false;
+  
+  if(userParamStr[0] == '"') {
+    for(size_t i=0; i<userParamStr.size(); i++) {
+      while (userParamStr[i] == '"') {
+        doublequote = !doublequote;
+        i++;
+      }
 
-  for(size_t i=0; i<userParamStr.size(); i++) {
-    while(userParamStr[i] == '\'') {
-      singlequote = !singlequote;
-      i++;
-    }
-
-    if(singlequote && userParamStr[i] == '\'') {
-      paramVector.push_back(argExtract);
-      argExtract = "";
-    }
-
-    if(singlequote) argExtract += userParamStr[i];
-    else {
-      if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
+      if(doublequote && userParamStr[i] == '"') {
         paramVector.push_back(argExtract);
         argExtract = "";
-        while(i + 1 < userParamStr.size() && (userParamStr[i + 1] == ' ' || userParamStr[i + 1] == '\t')) i++;
-      } else argExtract += userParamStr[i];
+      }
+      
+      if(doublequote) argExtract+=userParamStr[i];
+      else {
+        if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
+          paramVector.push_back(argExtract);
+          argExtract = "";
+          while(i + 1 < userParamStr.size() && (userParamStr[i + 1] == ' ' || userParamStr[i + 1] == '\t')) i++;
+        } else argExtract += userParamStr[i];
+      }
+    }
+  } else {
+    for(size_t i=0; i<userParamStr.size(); i++) {
+      if(!singlequote && userParamStr[i] == '\\') {
+        argExtract+=userParamStr[++i];
+      } else {
+        while(userParamStr[i] == '\'') {
+          singlequote = !singlequote;
+          i++;
+        }
+
+        if(singlequote && userParamStr[i] == '\'') {
+          paramVector.push_back(argExtract);
+          argExtract = "";
+        }
+
+        if(singlequote) argExtract += userParamStr[i];
+        else {
+          if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
+            paramVector.push_back(argExtract);
+            argExtract = "";
+            while(i + 1 < userParamStr.size() && (userParamStr[i + 1] == ' ' || userParamStr[i + 1] == '\t')) i++;
+          } else argExtract += userParamStr[i];
+        }
+      }
     }
   }
   paramVector.push_back(argExtract);

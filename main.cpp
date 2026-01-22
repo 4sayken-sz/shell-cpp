@@ -65,9 +65,7 @@ int main() {
         }
       }
     } else {
-      std::vector<std::string> parameters = parseUserArguments(paramStr);
-      std::vector<std::string> argStrings;
-      argStrings.push_back(cmd);
+      std::vector<std::string> argStrings = parseUserArguments(userCommandInput);
       
       bool foundcmd = false;
       const char* pathVal = std::getenv("PATH");
@@ -79,8 +77,6 @@ int main() {
       }
       
       if(foundcmd) {
-        argStrings.insert(argStrings.end(), parameters.begin(), parameters.end());
-        
         std::vector<char*> programArgs;
         for(auto &strptr : argStrings) {
           programArgs.push_back(const_cast<char*>(strptr.c_str()));
@@ -126,12 +122,14 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
   for (size_t i=0; i<userParamStr.size(); i++) {
     if(userParamStr[i] == '\\') {
       if(doublequote) {
-        argExtract+=userParamStr[i++];
-        for(char c : specialChars) {
-          if(c == userParamStr[i]) {
-            argExtract.pop_back();
-            argExtract+=userParamStr[i];
-            break;
+        argExtract+=userParamStr[i]; 
+        if(i+1 < userParamStr.size()) {
+          for(char c : specialChars) {
+            if(c == userParamStr[i+1]) {
+              argExtract.pop_back();
+              argExtract+=userParamStr[++i];
+              break;
+            }
           }
         }
       } else if(singlequote) argExtract+=userParamStr[i]; 
@@ -142,7 +140,7 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
       else if(singlequote) {
         if(userParamStr[i] == '\'') {
           paramVector.push_back(argExtract);
-          argExtract.clear();                 // fast for loop
+          argExtract.clear();                 // fast for loop instead of calling assignment
         } else argExtract+=userParamStr[i];
       } else if(doublequote) {
         if(userParamStr[i] == '"') {
@@ -162,5 +160,4 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
   
   return paramVector;
 }
-
 

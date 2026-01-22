@@ -121,21 +121,35 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
   std::string argExtract = "";
   bool singlequote = false;
   bool doublequote = false;
+  std::vector<char> specialChars = {'"', '\\', '$', '`', 'n'};
   
-  if(userParamStr[0] == '"') {
-    for(size_t i=0; i<userParamStr.size(); i++) {
-      while (userParamStr[i] == '"') {
-        doublequote = !doublequote;
-        i++;
-      }
-
-      if(doublequote && userParamStr[i] == '"') {
-        paramVector.push_back(argExtract);
-        argExtract = "";
-      }
-      
-      if(doublequote) argExtract+=userParamStr[i];
-      else {
+  for (size_t i=0; i<userParamStr.size(); i++) {
+    if(userParamStr[i] == '\\') {
+      if(doublequote) {
+        argExtract+=userParamStr[i++];
+        for(char c : specialChars) {
+          if(c == userParamStr[i]) {
+            argExtract.pop_back();
+            argExtract+=userParamStr[i];
+            break;
+          }
+        }
+      } else if(singlequote) argExtract+=userParamStr[i]; 
+      else argExtract+=userParamStr[++i];
+    } else {
+      if(userParamStr[i] == '\'' && !doublequote) singlequote = !singlequote;
+      else if(userParamStr[i] == '"' && !singlequote) doublequote = !doublequote;
+      else if(singlequote) {
+        if(userParamStr[i] == '\'') {
+          paramVector.push_back(argExtract);
+          argExtract.clear();                 // fast for loop
+        } else argExtract+=userParamStr[i];
+      } else if(doublequote) {
+        if(userParamStr[i] == '"') {
+          paramVector.push_back(argExtract);
+          argExtract.clear();
+        } else argExtract+=userParamStr[i];
+      } else {
         if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
           paramVector.push_back(argExtract);
           argExtract = "";
@@ -143,34 +157,9 @@ std::vector<std::string> parseUserArguments(std::string userParamStr) {
         } else argExtract += userParamStr[i];
       }
     }
-  } else {
-    for(size_t i=0; i<userParamStr.size(); i++) {
-      if(!singlequote && userParamStr[i] == '\\') {
-        argExtract+=userParamStr[++i];
-      } else {
-        while(userParamStr[i] == '\'') {
-          singlequote = !singlequote;
-          i++;
-        }
-
-        if(singlequote && userParamStr[i] == '\'') {
-          paramVector.push_back(argExtract);
-          argExtract = "";
-        }
-
-        if(singlequote) argExtract += userParamStr[i];
-        else {
-          if(userParamStr[i] == ' ' || userParamStr[i] == '\t') {
-            paramVector.push_back(argExtract);
-            argExtract = "";
-            while(i + 1 < userParamStr.size() && (userParamStr[i + 1] == ' ' || userParamStr[i + 1] == '\t')) i++;
-          } else argExtract += userParamStr[i];
-        }
-      }
-    }
   }
   paramVector.push_back(argExtract);
-
+  
   return paramVector;
 }
 

@@ -25,20 +25,24 @@ int main() {
 
     std::vector<std::string> cmdStrings = parseCmdString(userCommandInput); // command parser
 
-    int outRedirect = -1;
+    int redirectIdx = -1, redirectVal = -1;
     std::string targetFile = "";
     for(size_t i=1; i<cmdStrings.size(); i++){
       if(cmdStrings[i] == ">" || cmdStrings[i] == "1>") {
-        outRedirect = i;
+        redirectIdx = i;
+        redirectVal = 1;
         break;
+      } else if(cmdStrings[i] == "2>") {
+        redirectIdx = i;
+        redirectVal = 2;
       }
     }
 
     if (cmdStrings[0] == "exit") return 0;
 
-    if(outRedirect != -1) {
-      if(outRedirect + 1 < cmdStrings.size()) {
-        targetFile = cmdStrings[outRedirect+1];
+    if(redirectIdx != -1) {
+      if(redirectIdx + 1 < cmdStrings.size()) {
+        targetFile = cmdStrings[redirectIdx+1];
       } else continue;
 
       pid_t redirectPid = fork();
@@ -49,15 +53,25 @@ int main() {
         const char *fileName = targetFile.c_str();
 
         std::vector<char*> programArgs;
-        for(int i=0; i<outRedirect; i++) {
+        for(int i=0; i<redirectIdx; i++) {
           programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
         }
         programArgs.push_back(nullptr);
 
         int fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if(fd == -1) exit(1);
-        if(dup2(fd, STDOUT_FILENO) == -1) exit(1);
-        close(fd);
+
+        if(redirectVal == 1) {
+          if(fd == -1) exit(1);
+          if(dup2(fd, STDOUT_FILENO) == -1) exit(1);
+          close(fd);
+        }
+
+        if(redirectVal == 2) {
+          if(fd == -1) exit(1);
+          if(dup2(fd, STDERR_FILENO) == -1) exit(1);
+          close(fd);
+        }
+        
         execvp(programArgs[0], programArgs.data());
 
       } else {

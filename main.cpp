@@ -35,6 +35,15 @@ int main() {
       } else if(cmdStrings[i] == "2>") {
         redirectIdx = i;
         redirectVal = 2;
+        break;
+      } else if(cmdStrings[i] == ">>" || cmdStrings[i] == "1>>") {
+        redirectIdx = i;
+        redirectVal = 3;
+        break;
+      } else if(cmdStrings[i] == "2>>") {
+        redirectIdx = i;
+        redirectVal = 4;
+        break;
       }
     }
 
@@ -58,20 +67,23 @@ int main() {
         }
         programArgs.push_back(nullptr);
 
-        int fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int fd;
+        if(redirectVal == 1 || redirectVal == 2) { // new/append file mode decision
+          fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        } else if(redirectVal == 3 || redirectVal == 4) {
+          fd = open(fileName, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        }
 
-        if(redirectVal == 1) {
+        if(redirectVal == 1 || redirectVal == 3) { // output/error redirection decision
           if(fd == -1) exit(1);
           if(dup2(fd, STDOUT_FILENO) == -1) exit(1);
           close(fd);
-        }
-
-        if(redirectVal == 2) {
+        } else if(redirectVal == 2 || redirectVal == 4) {
           if(fd == -1) exit(1);
           if(dup2(fd, STDERR_FILENO) == -1) exit(1);
           close(fd);
         }
-        
+
         execvp(programArgs[0], programArgs.data());
 
       } else {

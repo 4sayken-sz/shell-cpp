@@ -1,2 +1,2 @@
 # shell-cpp
-A shell build in cpp
+Custom-Shell for linux in C++

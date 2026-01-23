@@ -7,14 +7,13 @@
 #include <unistd.h> //execve
 #include <sys/types.h>
 #include <sys/wait.h> //wait
+#include <fcntl.h> // open
 
 bool findExecFile(std::string, std::string);
-std::vector<std::string> parseUserArguments(std::string);
+std::vector<std::string> parseCmdString(std::string);
 
 int main() {
-  // Flush after every std::cout / std:cerr
-  // TODO: Uncomment the code below to pass the first stage
-  std::vector<std::string> commandstrings = {"echo", "type", "exit"};
+  std::vector<std::string> defaultCmds = {"echo", "type", "exit"};
 
   while (true) {
     std::cout << std::unitbuf;
@@ -22,63 +21,95 @@ int main() {
     
     std::cout << "$ ";
     std::string userCommandInput = "";
-    std::getline(std::cin, userCommandInput);
+    std::getline(std::cin, userCommandInput); // command input
 
-    std::string cmd = "";
-    std::string paramStr = "";
-    std::istringstream parseUserCommand(userCommandInput);
+    std::vector<std::string> cmdStrings = parseCmdString(userCommandInput); // command parser
 
-    parseUserCommand >> cmd; // extract command
-    if (cmd == "exit") return 0;
-    std::getline(parseUserCommand >> std::ws, paramStr); // extract arguments
+    int outRedirect = -1;
+    std::string targetFile = "";
+    for(size_t i=1; i<cmdStrings.size(); i++){
+      if(cmdStrings[i] == ">" || cmdStrings[i] == "1>") {
+        outRedirect = i;
+        break;
+      }
+    }
 
-    if(cmd == "echo") {
-      std::vector<std::string> echoParams = parseUserArguments(paramStr);
+    if (cmdStrings[0] == "exit") return 0;
 
-      for(const std::string &str : echoParams) std::cout << str << " ";
-      std::cout << std::endl;
-    } else if(cmd == "type") {
-      bool foundcmd = false;
-      std::string parameterCmd = "";
-      std::istringstream parseTemp(paramStr);
+    if(outRedirect != -1) {
+      if(outRedirect + 1 < cmdStrings.size()) {
+        targetFile = cmdStrings[outRedirect+1];
+      } else continue;
 
-      if(parseTemp >> parameterCmd) {
-        for(int i=0; i<commandstrings.size(); i++) {
-          if(commandstrings[i] == parameterCmd) {
-            std::cout << parameterCmd << " is a shell builtin" << std::endl;
-            foundcmd = true;
-            break;
-          }
+      pid_t redirectPid = fork();
+      if(redirectPid < 0) {
+        std::cout << "fork failed()" << std::endl;
+        _exit(0); // exit(0) may flush praents I/O buffers, good safe exit in child process and signal handlers
+      } else if(redirectPid == 0) { // child process
+        const char *fileName = targetFile.c_str();
+
+        std::vector<char*> programArgs;
+        for(int i=0; i<outRedirect; i++) {
+          programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
         }
+        programArgs.push_back(nullptr);
 
-        if(!foundcmd) {
-          const char* pathVal = std::getenv("PATH");
-          std::string Path = "";
-          std::istringstream pathParse(pathVal);
+        int fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if(fd == -1) exit(1);
+        if(dup2(fd, STDOUT_FILENO) == -1) exit(1);
+        close(fd);
+        execvp(programArgs[0], programArgs.data());
 
-          while(!foundcmd && std::getline(pathParse, Path, ':')) {
-            foundcmd = findExecFile(Path, parameterCmd);
-          }
+      } else {
+        wait(NULL);
+        continue;
+      }
+    }
 
-          if(foundcmd) std::cout << parameterCmd << " is " << Path << "/" << parameterCmd << std::endl;
-          else std::cout << parameterCmd << ": not found" << std::endl;
+
+    if(cmdStrings[0] == "echo") {
+      for(size_t i=1; i<cmdStrings.size(); i++){
+        std::cout << cmdStrings[i] << " ";
+      } 
+      std::cout << std::endl;
+
+    } else if(cmdStrings[0] == "type") {
+      bool foundcmd = false;
+
+      for(int i=0; i<defaultCmds.size(); i++) {
+        if(defaultCmds[i] == cmdStrings[1]) {
+          std::cout << cmdStrings[1] << " is a shell builtin" << std::endl;
+          foundcmd = true;
+          break;
         }
       }
+
+      if(!foundcmd) {
+        const char* pathVal = std::getenv("PATH");
+        std::string Path = "";
+        std::istringstream pathParse(pathVal);
+
+        while(!foundcmd && std::getline(pathParse, Path, ':')) {
+          foundcmd = findExecFile(Path, cmdStrings[1]);
+        }
+
+        if(foundcmd) std::cout << cmdStrings[1] << " is " << Path << "/" << cmdStrings[1] << std::endl;
+        else std::cout << cmdStrings[1] << ": not found" << std::endl;
+      }
+
     } else {
-      std::vector<std::string> argStrings = parseUserArguments(userCommandInput);
-      
       bool foundcmd = false;
       const char* pathVal = std::getenv("PATH");
       std::string Path = "";
       std::istringstream pathParse(pathVal);
 
       while(!foundcmd && std::getline(pathParse, Path, ':')) {
-        foundcmd = findExecFile(Path, argStrings[0]);
+        foundcmd = findExecFile(Path, cmdStrings[0]);
       }
       
       if(foundcmd) {
         std::vector<char*> programArgs;
-        for(auto &strptr : argStrings) {
+        for(auto &strptr : cmdStrings) {
           programArgs.push_back(const_cast<char*>(strptr.c_str()));
         }
         programArgs.push_back(nullptr);
@@ -86,11 +117,12 @@ int main() {
         pid_t pid = fork();
         if(pid == 0) execvp(programArgs[0], programArgs.data());
         else if(pid > 0) wait(NULL);
-      } else std::cout << argStrings[0] << ": command not found" << std::endl;
+      } else std::cout << cmdStrings[0] << ": command not found" << std::endl;
     }
   }
   return 0;
 }
+
 
 bool findExecFile(std::string envPath, std::string cmdName) {
   bool fileExists = false; 
@@ -112,7 +144,7 @@ bool findExecFile(std::string envPath, std::string cmdName) {
   return fileExists;
 }
 
-std::vector<std::string> parseUserArguments(std::string userParamStr) {
+std::vector<std::string> parseCmdString(std::string userParamStr) {
   std::vector<std::string> paramVector;
   std::string argExtract = "";
   bool singlequote = false;

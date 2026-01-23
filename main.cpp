@@ -8,9 +8,15 @@
 #include <sys/types.h>
 #include <sys/wait.h> //wait
 #include <fcntl.h> // open
+#include <termios.h> // terminal drivers
+
+struct termios mainTermios;
 
 bool findExecFile(std::string, std::string);
 std::vector<std::string> parseCmdString(std::string);
+std::string tabCompleter(std::string &, std::vector<std::string>);
+void disableRawMode();
+void enableRawMode();
 
 int main() {
   std::vector<std::string> defaultCmds = {"echo", "type", "exit"};
@@ -19,11 +25,26 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    std::cout << "$ ";
-    std::string userCommandInput = "";
-    std::getline(std::cin, userCommandInput); // command input
+    std::cout << "$ " << std::flush; // flush to fix memory buffer before enabling raw mode
+    std::string cmdLine = "";
+    char inputChar;
+    
+    enableRawMode();
+    while(read(STDIN_FILENO, &inputChar, 1) && inputChar != '\n') {
+      if(inputChar == '\t') {
+        for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush; // handling buffer memory personally coz raw mode
 
-    std::vector<std::string> cmdStrings = parseCmdString(userCommandInput); // command parser
+        std::cout << tabCompleter(cmdLine, defaultCmds) << std::flush;
+      } else {
+        cmdLine+=inputChar;
+        std::cout << inputChar << std::flush;
+      }
+    }
+    disableRawMode();
+    std::cout << std::flush << std::endl;
+
+    const std::vector<std::string> cmdStrings = parseCmdString(cmdLine); // command parser
+    if (cmdStrings[0] == "exit") return 0;
 
     int redirectIdx = -1, redirectVal = -1;
     std::string targetFile = "";
@@ -46,8 +67,6 @@ int main() {
         break;
       }
     }
-
-    if (cmdStrings[0] == "exit") return 0;
 
     if(redirectIdx != -1) {
       if(redirectIdx + 1 < cmdStrings.size()) {
@@ -217,5 +236,28 @@ std::vector<std::string> parseCmdString(std::string userParamStr) {
   paramVector.push_back(argExtract);
   
   return paramVector;
+}
+
+std::string tabCompleter(std::string &incompleteString, std::vector<std::string> inbuiltCmd) {
+  for(const auto &str : inbuiltCmd) {
+    if(str.find(incompleteString) == 0) {
+      incompleteString = (str+" ");
+      return incompleteString;
+    }
+  }
+  return incompleteString;
+}
+
+void disableRawMode() {
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &mainTermios); // reassign standard output to main terminal 
+}
+
+void enableRawMode() {
+  tcgetattr(STDIN_FILENO, &mainTermios); // save main terminal state
+  atexit(disableRawMode); // auto call to disable raw mode to fix terminal if program ends or crashes without disabling raw mode, a safe switch
+
+  struct termios raw = mainTermios; // copy main terminal state for changing and passing
+  raw.c_lflag &= ~(ICANON | ECHO); // disable buffer until \n and disable auto print everycharacter on terminal;
+  tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw); // set output to changed terminal state only after pending output has transmitted and discard unread input
 }
 

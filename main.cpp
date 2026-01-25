@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <unistd.h> //execve
@@ -10,13 +11,13 @@
 #include <fcntl.h> // open
 #include <termios.h> // terminal drivers
 
-struct termios mainTermios;
-
 bool findExecFile(std::string, std::string);
 std::vector<std::string> parseCmdString(std::string);
 std::string tabCompleter(std::string &, std::vector<std::string>);
 void disableRawMode();
 void enableRawMode();
+
+struct termios mainTermios;
 
 int main() {
   std::vector<std::string> defaultCmds = {"echo", "type", "exit"};
@@ -25,7 +26,7 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    std::cout << "$ " << std::flush; // flush to fix memory buffer before enabling raw mode
+    std::cout << "$ " << std::flush; // flush to clear memory buffer before enabling raw mode, clears output issue later
     std::string cmdLine = "";
     char inputChar;
     
@@ -33,15 +34,15 @@ int main() {
     while(read(STDIN_FILENO, &inputChar, 1) && inputChar != '\n') {
       if(inputChar == '\t') {
         for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush; // handling buffer memory personally coz raw mode
-
         std::cout << tabCompleter(cmdLine, defaultCmds) << std::flush;
+        
       } else {
         cmdLine+=inputChar;
         std::cout << inputChar << std::flush;
       }
     }
     disableRawMode();
-    std::cout << std::flush << std::endl;
+    std::cout << std::endl;
 
     const std::vector<std::string> cmdStrings = parseCmdString(cmdLine); // command parser
     if (cmdStrings[0] == "exit") return 0;
@@ -110,7 +111,6 @@ int main() {
         continue;
       }
     }
-
 
     if(cmdStrings[0] == "echo") {
       for(size_t i=1; i<cmdStrings.size(); i++){
@@ -245,6 +245,63 @@ std::string tabCompleter(std::string &incompleteString, std::vector<std::string>
       return incompleteString;
     }
   }
+
+  const char* pathVal = std::getenv("PATH");
+  std::string Path = "";
+  std::istringstream pathParse(pathVal); 
+  std::vector<std::string> matchedFiles;
+
+  while(std::getline(pathParse, Path, ':')) {
+    std::filesystem::path currentFileSysPath = Path;
+
+    if(std::filesystem::exists(currentFileSysPath) && std::filesystem::is_directory(currentFileSysPath)) {
+      for(const std::filesystem::directory_entry file : std::filesystem::directory_iterator(currentFileSysPath)) {
+        std::string f = file.path().filename().c_str();
+        if(f.find(incompleteString) == 0) {
+          std::filesystem::file_status fileStatus = std::filesystem::status(file.path());
+          std::filesystem::perms filePermissions = fileStatus.permissions();
+
+          if((filePermissions & std::filesystem::perms::owner_exec) != std::filesystem::perms::none) {
+            matchedFiles.push_back(f);
+          }
+        }
+      }
+    }
+  }
+
+  if(matchedFiles.size() == 1) {
+    incompleteString=matchedFiles[0]+" ";
+    return incompleteString;
+  } else if(matchedFiles.size() > 1) {
+    std::sort(matchedFiles.begin(), matchedFiles.end());
+
+    std::string firstFile = matchedFiles[0];
+    std::string lastFile = matchedFiles[matchedFiles.size()-1];
+
+    // longest common prefix
+    std::string lprefix = "";
+    for(size_t i=0; i<firstFile.size(); i++) {
+      if(firstFile[i] != lastFile[i]) break;
+      lprefix+=firstFile[i];
+    }    
+
+    incompleteString=lprefix;
+    std::cout << incompleteString << '\a' << std::flush;
+
+    char nextChar;
+    if(read(STDIN_FILENO, &nextChar, 1) == 1 && nextChar == '\t') {
+      std::cout << std::endl;
+      for(std::string &matchedfile : matchedFiles) {
+        std::cout << matchedfile << "  " ;
+      }
+      std::cout << std::endl << "$ ";
+    } else {
+      for(size_t i=0; i<incompleteString.size(); i++) std::cout << "\b \b" << std::flush;
+      incompleteString+=nextChar;
+      return incompleteString;
+    }
+  } else std::cout << '\a' << std::flush; // \a is bell character, beep sound
+
   return incompleteString;
 }
 
@@ -260,4 +317,3 @@ void enableRawMode() {
   raw.c_lflag &= ~(ICANON | ECHO); // disable buffer until \n and disable auto print everycharacter on terminal;
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw); // set output to changed terminal state only after pending output has transmitted and discard unread input
 }
-

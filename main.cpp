@@ -26,23 +26,28 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    std::cout << "$ " << std::flush; // flush to clear memory buffer before enabling raw mode, clears output issue later
-    std::string cmdLine = "";
+    int pipefds[2];
     char inputChar;
+    std::string cmdLine = "";
+    std::cout << "$ " << std::flush; // flush to clear memory buffer before enabling raw mode, clears output issue later
     
     enableRawMode();
     while(read(STDIN_FILENO, &inputChar, 1) && inputChar != '\n') {
       if(inputChar == '\t') {
         for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush; // handling buffer memory personally coz raw mode
-        std::cout << tabCompleter(cmdLine, defaultCmds) << std::flush;
-        
+        tabCompleter(cmdLine, defaultCmds);
+        if(cmdLine.back() == '\n') {
+          cmdLine.pop_back();
+          std::cout << cmdLine << std::flush;
+          break;
+        } else std::cout << cmdLine << std::flush;
       } else {
         cmdLine+=inputChar;
         std::cout << inputChar << std::flush;
       }
     }
-    disableRawMode();
     std::cout << std::endl;
+    disableRawMode();
 
     const std::vector<std::string> cmdStrings = parseCmdString(cmdLine); // command parser
     if (cmdStrings[0] == "exit") return 0;
@@ -66,18 +71,26 @@ int main() {
         redirectIdx = i;
         redirectVal = 4;
         break;
+      } else if(cmdStrings[i] == "|") {
+        redirectIdx = i;
+        redirectVal = 5;
+        if(pipe(pipefds) == -1) {
+          std::cerr << "pipe failed" << std::endl;
+          continue;
+        }
+        break;
       }
     }
 
     if(redirectIdx != -1) {
-      if(redirectIdx + 1 < cmdStrings.size()) {
+      if(redirectIdx+1 < cmdStrings.size()) {
         targetFile = cmdStrings[redirectIdx+1];
-      } else continue;
+      } else exit(1);
 
       pid_t redirectPid = fork();
       if(redirectPid < 0) {
         std::cout << "fork failed()" << std::endl;
-        _exit(0); // exit(0) may flush praents I/O buffers, good safe exit in child process and signal handlers
+        _exit(0); // exit(0) may flush parents I/O buffers, good safe exit in child process and signal handlers
       } else if(redirectPid == 0) { // child process
         const char *fileName = targetFile.c_str();
 
@@ -102,13 +115,20 @@ int main() {
           if(fd == -1) exit(1);
           if(dup2(fd, STDERR_FILENO) == -1) exit(1);
           close(fd);
+        } else if(redirectVal == 5) {
+          if(dup2(pipefds[1], STDOUT_FILENO) == -1) exit(1);
+          close(pipefds[0]);
+          close(pipefds[1]);
         }
 
         execvp(programArgs[0], programArgs.data());
-
+        std::cerr << "fork1 failed" << std::endl;
+        exit(1);
       } else {
-        wait(NULL);
-        continue;
+        if(redirectVal != 5) {
+          wait(NULL);
+          continue;
+        }
       }
     }
 
@@ -154,15 +174,39 @@ int main() {
       
       if(foundcmd) {
         std::vector<char*> programArgs;
-        for(auto &strptr : cmdStrings) {
-          programArgs.push_back(const_cast<char*>(strptr.c_str()));
+        if(redirectVal == 5) {
+          if(redirectIdx+1 < cmdStrings.size()) {
+            for(size_t i=redirectIdx+1; i<cmdStrings.size(); i++) {
+              programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
+            }
+            programArgs.push_back(nullptr);
+          } else std::cerr << "invalid command after after pipe" << std::endl;
+        } else {
+          for(size_t i=0; i<cmdStrings.size(); i++) {
+            programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
+          }
+          programArgs.push_back(nullptr);
         }
-        programArgs.push_back(nullptr);
 
         pid_t pid = fork();
-        if(pid == 0) execvp(programArgs[0], programArgs.data());
-        else if(pid > 0) wait(NULL);
+        if(pid == 0) {
+          if(redirectVal == 5) {
+            if(dup2(pipefds[0], STDIN_FILENO) == -1) exit(1);
+            close(pipefds[1]);
+            close(pipefds[0]); 
+          }
+          execvp(programArgs[0], programArgs.data());
+          exit(1);
+        }
       } else std::cout << cmdStrings[0] << ": command not found" << std::endl;
+
+      if(redirectVal == 5) {
+        close(pipefds[0]);
+        close(pipefds[1]);
+      }
+
+      waitpid(-1, NULL, 0);
+      waitpid(-1, NULL, 0);
     }
   }
   return 0;
@@ -289,7 +333,7 @@ std::string tabCompleter(std::string &incompleteString, std::vector<std::string>
     std::cout << incompleteString << '\a' << std::flush;
 
     char nextChar;
-    if(read(STDIN_FILENO, &nextChar, 1) == 1 && nextChar == '\t') {
+    if(read(STDIN_FILENO, &nextChar, 1) && nextChar == '\t') {
       std::cout << std::endl;
       for(std::string &matchedfile : matchedFiles) {
         std::cout << matchedfile << "  " ;

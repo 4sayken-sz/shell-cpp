@@ -11,11 +11,15 @@
 #include <fcntl.h> // open
 #include <termios.h> // terminal drivers
 
-bool findExecFile(std::string, std::string);
+bool isExecFile(std::string, std::string);
+bool isitExecFile(std::string);
 std::vector<std::string> parseCmdString(std::string);
 std::string tabCompleter(std::string &, std::vector<std::string>);
 void disableRawMode();
 void enableRawMode();
+bool isBuiltinCommand(std::string, std::vector<std::string> &);
+void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &);
+void redirect(int (&)[3],std::string &);
 
 struct termios mainTermios;
 
@@ -26,7 +30,6 @@ int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
     
-    int pipefds[2];
     char inputChar;
     std::string cmdLine = "";
     std::cout << "$ " << std::flush; // flush to clear memory buffer before enabling raw mode, clears output issue later
@@ -41,6 +44,11 @@ int main() {
           std::cout << cmdLine << std::flush;
           break;
         } else std::cout << cmdLine << std::flush;
+      } else if(inputChar == 127) {
+        if(!cmdLine.empty()) {
+          cmdLine.pop_back();
+          std::cout << "\b \b" << std::flush;
+        }
       } else {
         cmdLine+=inputChar;
         std::cout << inputChar << std::flush;
@@ -49,171 +57,187 @@ int main() {
     std::cout << std::endl;
     disableRawMode();
 
-    const std::vector<std::string> cmdStrings = parseCmdString(cmdLine); // command parser
-    if (cmdStrings[0] == "exit") return 0;
-
-    int redirectIdx = -1, redirectVal = -1;
-    std::string targetFile = "";
-    for(size_t i=1; i<cmdStrings.size(); i++){
-      if(cmdStrings[i] == ">" || cmdStrings[i] == "1>") {
-        redirectIdx = i;
-        redirectVal = 1;
-        break;
-      } else if(cmdStrings[i] == "2>") {
-        redirectIdx = i;
-        redirectVal = 2;
-        break;
-      } else if(cmdStrings[i] == ">>" || cmdStrings[i] == "1>>") {
-        redirectIdx = i;
-        redirectVal = 3;
-        break;
-      } else if(cmdStrings[i] == "2>>") {
-        redirectIdx = i;
-        redirectVal = 4;
-        break;
-      } else if(cmdStrings[i] == "|") {
-        redirectIdx = i;
-        redirectVal = 5;
-        if(pipe(pipefds) == -1) {
-          std::cerr << "pipe failed" << std::endl;
-          continue;
-        }
-        break;
-      }
+    const std::vector<std::string> withPipeStrings = parseCmdString(cmdLine); // command parser
+    std::vector<std::vector<std::string>> cmdStrings;
+    
+    std::vector<std::string> cmdL;
+    for(auto &str : withPipeStrings) {
+      if(str == "|") {
+        cmdStrings.push_back(cmdL);
+        cmdL.clear();
+      } else cmdL.push_back(str);
     }
+    if (!cmdL.empty()) cmdStrings.push_back(cmdL);
 
-    if(redirectIdx != -1) {
-      if(redirectIdx+1 < cmdStrings.size()) {
-        targetFile = cmdStrings[redirectIdx+1];
-      } else exit(1);
+    if(cmdStrings.size() < 1) continue;
+    if (cmdStrings[0][0] == "exit") return 0;
 
-      pid_t redirectPid = fork();
-      if(redirectPid < 0) {
-        std::cout << "fork failed()" << std::endl;
-        _exit(0); // exit(0) may flush parents I/O buffers, good safe exit in child process and signal handlers
-      } else if(redirectPid == 0) { // child process
-        const char *fileName = targetFile.c_str();
+    const int original_inputfd = dup(STDIN_FILENO);
+    const int original_outputfd = dup(STDOUT_FILENO);
+    int prev_pipeIn = dup(STDIN_FILENO);
 
-        std::vector<char*> programArgs;
-        for(int i=0; i<redirectIdx; i++) {
-          programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
-        }
-        programArgs.push_back(nullptr);
-
-        int fd;
-        if(redirectVal == 1 || redirectVal == 2) { // new/append file mode decision
-          fd = open(fileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        } else if(redirectVal == 3 || redirectVal == 4) {
-          fd = open(fileName, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        }
-
-        if(redirectVal == 1 || redirectVal == 3) { // output/error redirection decision
-          if(fd == -1) exit(1);
-          if(dup2(fd, STDOUT_FILENO) == -1) exit(1);
-          close(fd);
-        } else if(redirectVal == 2 || redirectVal == 4) {
-          if(fd == -1) exit(1);
-          if(dup2(fd, STDERR_FILENO) == -1) exit(1);
-          close(fd);
-        } else if(redirectVal == 5) {
-          if(dup2(pipefds[1], STDOUT_FILENO) == -1) exit(1);
-          close(pipefds[0]);
-          close(pipefds[1]);
-        }
-
-        execvp(programArgs[0], programArgs.data());
-        std::cerr << "fork1 failed" << std::endl;
-        exit(1);
-      } else {
-        if(redirectVal != 5) {
-          wait(NULL);
-          continue;
-        }
+    for(size_t i=0; i<cmdStrings.size(); i++) { // main pipelining loop
+      int newpipefds[2];
+      bool isLast = (i == cmdStrings.size()-1);
+      if(!isLast) {
+        if(pipe(newpipefds) == -1) {
+          std::cerr << "failed pipe" << std::endl;
+          break;
+        } // 0-read, 1-write
       }
-    }
 
-    if(cmdStrings[0] == "echo") {
-      for(size_t i=1; i<cmdStrings.size(); i++){
-        std::cout << cmdStrings[i] << " ";
-      } 
-      std::cout << std::endl;
-
-    } else if(cmdStrings[0] == "type") {
-      bool foundcmd = false;
-
-      for(int i=0; i<defaultCmds.size(); i++) {
-        if(defaultCmds[i] == cmdStrings[1]) {
-          std::cout << cmdStrings[1] << " is a shell builtin" << std::endl;
-          foundcmd = true;
+      std::vector<char*> currentProgArgs;
+      const char* outFile = nullptr;
+      int redirvalues[3] = {0}; // loc 0 for redircheck(1=T/0=F), loc 1 for new/append file, loc 2 for output/error redirection
+      
+      for(size_t j=0; j<cmdStrings[i].size(); j++) { // redirector decider - argument parser
+        std::string str = cmdStrings[i][j];
+        if( str.back() == '>') {
+          if(j+1 < cmdStrings[i].size()) {
+            redirect(redirvalues, str);
+            if(redirvalues[0] != 0) {
+              outFile = (cmdStrings[i][j+1]).c_str();
+              break;
+            }
+          } else {
+            std::cerr << "redirection failed : no file specified" << std::endl;
+            break;
+          }
+        } else currentProgArgs.push_back(const_cast<char*>(cmdStrings[i][j].c_str()));
+      }
+      currentProgArgs.push_back(nullptr);
+      
+      if(isBuiltinCommand(currentProgArgs[0], defaultCmds)) {
+        if(dup2(prev_pipeIn, STDIN_FILENO) == -1) {
+          std::cerr << "pipe command execution 1 failed for builting" << std::endl;
+          close(prev_pipeIn);
+          close(newpipefds[0]);
+          close(newpipefds[1]);
           break;
         }
-      }
-
-      if(!foundcmd) {
-        const char* pathVal = std::getenv("PATH");
-        std::string Path = "";
-        std::istringstream pathParse(pathVal);
-
-        while(!foundcmd && std::getline(pathParse, Path, ':')) {
-          foundcmd = findExecFile(Path, cmdStrings[1]);
+        
+        if(!isLast && dup2(newpipefds[1], STDOUT_FILENO) == -1) {
+          std::cerr << "pipe command execution 2 failed for builting" << std::endl;
+          close(prev_pipeIn);
+          close(newpipefds[0]);
+          close(newpipefds[1]);
+          break;
         }
-
-        if(foundcmd) std::cout << cmdStrings[1] << " is " << Path << "/" << cmdStrings[1] << std::endl;
-        else std::cout << cmdStrings[1] << ": not found" << std::endl;
-      }
-
-    } else {
-      bool foundcmd = false;
-      const char* pathVal = std::getenv("PATH");
-      std::string Path = "";
-      std::istringstream pathParse(pathVal);
-
-      while(!foundcmd && std::getline(pathParse, Path, ':')) {
-        foundcmd = findExecFile(Path, cmdStrings[0]);
-      }
-      
-      if(foundcmd) {
-        std::vector<char*> programArgs;
-        if(redirectVal == 5) {
-          if(redirectIdx+1 < cmdStrings.size()) {
-            for(size_t i=redirectIdx+1; i<cmdStrings.size(); i++) {
-              programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
+        
+        if(redirvalues[0] == 1 && outFile != nullptr) {
+          int newfd;
+          const int stdout_fd = dup(STDOUT_FILENO);
+          const int stderr_fd = dup(STDERR_FILENO);
+          if(redirvalues[1] == 1) newfd = open(outFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+          else if(redirvalues[1] == 2) newfd = open(outFile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+          if(newfd == -1) {
+            std::cerr << "couldn't open specified file" << std::endl;
+            continue;
+          }
+          
+          if(redirvalues[2] == 1) {
+            if(dup2(newfd, STDOUT_FILENO) == -1) {
+              std::cerr << "output redirect failed" << std::endl;
+              continue;
             }
-            programArgs.push_back(nullptr);
-          } else std::cerr << "invalid command after after pipe" << std::endl;
+            close(newfd);
+          } else if(redirvalues[2] == 2) {
+            if(dup2(newfd, STDERR_FILENO) == -1) {
+              std::cerr << "error redirect failed" << std::endl;
+              continue;
+            }
+            close(newfd);
+          }
+          
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds);
+          
+          dup2(stdout_fd, STDOUT_FILENO);
+          dup2(stderr_fd, STDERR_FILENO);
+          close(stdout_fd);
+          close(stderr_fd);
         } else {
-          for(size_t i=0; i<cmdStrings.size(); i++) {
-            programArgs.push_back(const_cast<char*>(cmdStrings[i].c_str()));
-          }
-          programArgs.push_back(nullptr);
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds);
         }
 
+        dup2(original_inputfd, STDIN_FILENO);
+        dup2(original_outputfd, STDOUT_FILENO);
+        close(prev_pipeIn);
+        
+        if(!isLast) {
+          prev_pipeIn = newpipefds[0];
+          close(newpipefds[1]);
+        }
+        
+      } else if(isitExecFile(currentProgArgs[0])) {
         pid_t pid = fork();
-        if(pid == 0) {
-          if(redirectVal == 5) {
-            if(dup2(pipefds[0], STDIN_FILENO) == -1) exit(1);
-            close(pipefds[1]);
-            close(pipefds[0]); 
+        
+        if(pid == 0) { // child
+          if(dup2(prev_pipeIn, STDIN_FILENO) == -1) {
+            std::cerr << "pipe command execution 1 failed for exec" << std::endl;
+            exit(1);
           }
-          execvp(programArgs[0], programArgs.data());
+
+          if(!isLast && (dup2(newpipefds[1], STDOUT_FILENO) == -1)) {
+            std::cerr << "pipe command execution 2 failed for exec" << std::endl;
+            exit(1);
+          }
+
+          close(prev_pipeIn);
+          if(!isLast) {
+            close(newpipefds[0]);
+            close(newpipefds[1]);
+          }
+
+          if(redirvalues[0] == 1 && outFile != nullptr) {
+            int fd;
+            if(redirvalues[1] == 1) fd = open(outFile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            else if(redirvalues[1] == 2) fd = open(outFile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+            if(fd == -1) {
+              std::cerr << "couldn't open specified file" << std::endl;
+              exit(1);
+            }
+  
+            if(redirvalues[2] == 1) {
+              if(dup2(fd, STDOUT_FILENO) == -1) {
+                std::cerr << "output redirect failed" << std::endl;
+                exit(1);
+              }
+              close(fd);
+            } else if(redirvalues[2] == 2) {
+              if(dup2(fd, STDERR_FILENO) == -1) {
+                std::cerr << "error redirect failed" << std::endl;
+                exit(1);
+              }
+              close(fd);
+            }
+          }
+
+          execvp(currentProgArgs[0], currentProgArgs.data());
+          std::cerr << "Command exec failed" << std::endl;
           exit(1);
+        } else { // parent
+          close(prev_pipeIn);
+          if(!isLast) {
+            prev_pipeIn = newpipefds[0];
+            close(newpipefds[1]);
+          }
         }
-      } else std::cout << cmdStrings[0] << ": command not found" << std::endl;
-
-      if(redirectVal == 5) {
-        close(pipefds[0]);
-        close(pipefds[1]);
-      }
-
-      waitpid(-1, NULL, 0);
-      waitpid(-1, NULL, 0);
+      } else std::cout << currentProgArgs[0] << ": command not found" << std::endl;
     }
+
+    // to be sure
+    dup2(original_inputfd, STDIN_FILENO);
+    close(original_inputfd);
+    dup2(original_outputfd, STDOUT_FILENO);
+    close(original_outputfd);
+
+    for(size_t i=0; i<cmdStrings.size(); i++) wait(NULL);
   }
   return 0;
 }
 
 
-bool findExecFile(std::string envPath, std::string cmdName) {
+bool isExecFile(std::string envPath, std::string cmdName) {
   bool fileExists = false; 
   std::filesystem::path currentFileSysPath = envPath;
 
@@ -231,6 +255,34 @@ bool findExecFile(std::string envPath, std::string cmdName) {
   }
 
   return fileExists;
+}
+
+bool isitExecFile(std::string cmdName) {
+  bool foundcmd = false;
+  const char* pathVal = std::getenv("PATH");
+  std::istringstream pathParse(pathVal);
+  std::string currentPath = "";
+  if(pathVal != nullptr) {
+    while(std::getline(pathParse, currentPath, ':') && !foundcmd) {
+      std::filesystem::path currentFileSysPath = currentPath;
+
+      if(std::filesystem::exists(currentFileSysPath) && std::filesystem::is_directory(currentFileSysPath)) {
+        for(const auto &file : std::filesystem::directory_iterator(currentFileSysPath)) {
+          if(file.path().filename() == cmdName) {
+            std::filesystem::file_status fileStatus = std::filesystem::status(file.path());
+            std::filesystem::perms filePermissions = fileStatus.permissions();
+
+            if((filePermissions & std::filesystem::perms::owner_exec) != std::filesystem::perms::none) {
+              foundcmd = true;
+              break;
+            }
+          }
+        }
+      } else std::cout << currentPath << " : directory doesn't exists" << std::endl;
+    }
+  } else std::cout << "not found path variables" << std::endl;
+
+  return foundcmd;
 }
 
 std::vector<std::string> parseCmdString(std::string userParamStr) {
@@ -277,25 +329,26 @@ std::vector<std::string> parseCmdString(std::string userParamStr) {
       }
     }
   }
-  paramVector.push_back(argExtract);
+  if(argExtract != "" && !argExtract.empty()) paramVector.push_back(argExtract);
   
   return paramVector;
 }
 
 std::string tabCompleter(std::string &incompleteString, std::vector<std::string> inbuiltCmd) {
-  for(const auto &str : inbuiltCmd) {
+  for(const auto &str : inbuiltCmd) { // builtin completer
     if(str.find(incompleteString) == 0) {
       incompleteString = (str+" ");
       return incompleteString;
     }
   }
 
+  // exec finder and completer
   const char* pathVal = std::getenv("PATH");
   std::string Path = "";
   std::istringstream pathParse(pathVal); 
   std::vector<std::string> matchedFiles;
 
-  while(std::getline(pathParse, Path, ':')) {
+  while(std::getline(pathParse, Path, ':')) { // collect execs of paths
     std::filesystem::path currentFileSysPath = Path;
 
     if(std::filesystem::exists(currentFileSysPath) && std::filesystem::is_directory(currentFileSysPath)) {
@@ -361,3 +414,63 @@ void enableRawMode() {
   raw.c_lflag &= ~(ICANON | ECHO); // disable buffer until \n and disable auto print everycharacter on terminal;
   tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw); // set output to changed terminal state only after pending output has transmitted and discard unread input
 }
+
+bool isBuiltinCommand(std::string cmdstr, std::vector<std::string> &cmdbuiltin) {
+  for(int i=0; i<cmdbuiltin.size(); i++) {
+    if(cmdbuiltin[i] == cmdstr) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void execBuiltin(std::string inbuiltcmd, std::vector<char*> &cmdBuiltins, std::vector<std::string> &defbuiltins) {
+  if(inbuiltcmd == "echo") {
+      for(size_t i=1; i<cmdBuiltins.size() && cmdBuiltins[i] != nullptr; i++) {
+        std::cout << cmdBuiltins[i];
+        if(i + 1 < cmdBuiltins.size() && cmdBuiltins[i+1] != nullptr) std::cout << " ";
+      } 
+      std::cout << std::endl;
+
+    } else if(inbuiltcmd == "type") {
+      bool foundcmd = false;
+
+      foundcmd = isBuiltinCommand(cmdBuiltins[1], defbuiltins);
+      if(foundcmd) std::cout << cmdBuiltins[1] << " is a shell builtin" << std::endl;
+
+      if(!foundcmd) {
+        const char* pathVal = std::getenv("PATH");
+        std::string Path = "";
+        std::istringstream pathParse(pathVal);
+
+        while(!foundcmd && std::getline(pathParse, Path, ':')) {
+          foundcmd = isExecFile(Path, cmdBuiltins[1]);
+        }
+
+        if(foundcmd) std::cout << cmdBuiltins[1] << " is " << Path << "/" << cmdBuiltins[1] << std::endl;
+        else std::cout << cmdBuiltins[1] << ": not found" << std::endl;
+      }
+    }
+}
+
+void redirect(int (&arr)[3],std::string &str) {
+  // arr[0] = 0-f / 1-t
+  // arr[1] = 1-new / 2-append file
+  // arr[2] = 1-output / 2-error redirection
+  arr[0] = 1;
+  if(str == ">" || str == "1>") {
+    arr[1] = 1;
+    arr[2] = 1;
+  } else if(str == "2>") {
+    arr[1] = 1;
+    arr[2] = 2;
+  } else if(str == ">>" || str == "1>>") {
+    arr[1] = 2;
+    arr[2] = 1;
+  } else if(str == "2>>") {
+    arr[1] = 2;
+    arr[2] = 2;
+  } else arr[0] = 0;
+}
+

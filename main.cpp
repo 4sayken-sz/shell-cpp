@@ -18,13 +18,15 @@ std::string tabCompleter(std::string &, std::vector<std::string>);
 void disableRawMode();
 void enableRawMode();
 bool isBuiltinCommand(std::string, std::vector<std::string> &);
-void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &);
+void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &, std::vector<std::string> &);
 void redirect(int (&)[3],std::string &);
+void cmdHistory(int, std::vector<std::string> &);
 
 struct termios mainTermios;
 
 int main() {
-  std::vector<std::string> defaultCmds = {"echo", "type", "exit"};
+  std::vector<std::string> defaultCmds = {"echo", "type", "history", "exit"};
+  std::vector<std::string> commandHistory;
 
   while (true) {
     std::cout << std::unitbuf;
@@ -35,7 +37,30 @@ int main() {
     std::cout << "$ " << std::flush; // flush to clear memory buffer before enabling raw mode, clears output issue later
     
     enableRawMode();
+    const int minHistory = 0, maxHistory = commandHistory.size();
+    int currHistory = maxHistory;
     while(read(STDIN_FILENO, &inputChar, 1) && inputChar != '\n') {
+      if(inputChar == 27) {
+        char seq[2];
+        if(read(STDIN_FILENO, &seq[0], 1) && read(STDIN_FILENO, &seq[1], 1)) {
+          if(seq[0] == '['  && !commandHistory.empty()) {
+            if(seq[1] == 'A') {
+              for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush;
+              if(--currHistory < minHistory) currHistory = 0;
+              cmdLine = commandHistory[currHistory];
+              std::cout << cmdLine << std::flush;
+            } else if(seq[1] == 'B') {
+              for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush;
+              if(++currHistory > maxHistory) currHistory = maxHistory;
+              cmdLine = commandHistory[currHistory];
+              std::cout << cmdLine << std::flush;
+            }
+          }
+        }
+        continue;
+      }
+      
+      currHistory = maxHistory;
       if(inputChar == '\t') {
         for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush; // handling buffer memory personally coz raw mode
         tabCompleter(cmdLine, defaultCmds);
@@ -68,6 +93,7 @@ int main() {
       } else cmdL.push_back(str);
     }
     if (!cmdL.empty()) cmdStrings.push_back(cmdL);
+    commandHistory.push_back(cmdLine);
 
     if(cmdStrings.size() < 1) continue;
     if (cmdStrings[0][0] == "exit") return 0;
@@ -149,14 +175,14 @@ int main() {
             close(newfd);
           }
           
-          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds);
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory);
           
           dup2(stdout_fd, STDOUT_FILENO);
           dup2(stderr_fd, STDERR_FILENO);
           close(stdout_fd);
           close(stderr_fd);
         } else {
-          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds);
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory);
         }
 
         dup2(original_inputfd, STDIN_FILENO);
@@ -425,33 +451,39 @@ bool isBuiltinCommand(std::string cmdstr, std::vector<std::string> &cmdbuiltin) 
   return false;
 }
 
-void execBuiltin(std::string inbuiltcmd, std::vector<char*> &cmdBuiltins, std::vector<std::string> &defbuiltins) {
+void execBuiltin(std::string inbuiltcmd, std::vector<char*> &progArgArray, std::vector<std::string> &defbuiltins, std::vector<std::string> &cmdHisttoryvec) {
   if(inbuiltcmd == "echo") {
-      for(size_t i=1; i<cmdBuiltins.size() && cmdBuiltins[i] != nullptr; i++) {
-        std::cout << cmdBuiltins[i];
-        if(i + 1 < cmdBuiltins.size() && cmdBuiltins[i+1] != nullptr) std::cout << " ";
-      } 
-      std::cout << std::endl;
+    for(size_t i=1; i<progArgArray.size() && progArgArray[i] != nullptr; i++) {
+      std::cout << progArgArray[i];
+      if(i + 1 < progArgArray.size() && progArgArray[i+1] != nullptr) std::cout << " ";
+    } 
+    std::cout << std::endl;
 
-    } else if(inbuiltcmd == "type") {
-      bool foundcmd = false;
+  } else if(inbuiltcmd == "type") {
+    bool foundcmd = false;
 
-      foundcmd = isBuiltinCommand(cmdBuiltins[1], defbuiltins);
-      if(foundcmd) std::cout << cmdBuiltins[1] << " is a shell builtin" << std::endl;
+    foundcmd = isBuiltinCommand(progArgArray[1], defbuiltins);
+    if(foundcmd) std::cout << progArgArray[1] << " is a shell builtin" << std::endl;
 
-      if(!foundcmd) {
-        const char* pathVal = std::getenv("PATH");
-        std::string Path = "";
-        std::istringstream pathParse(pathVal);
+    if(!foundcmd) {
+      const char* pathVal = std::getenv("PATH");
+      std::string Path = "";
+      std::istringstream pathParse(pathVal);
 
-        while(!foundcmd && std::getline(pathParse, Path, ':')) {
-          foundcmd = isExecFile(Path, cmdBuiltins[1]);
-        }
-
-        if(foundcmd) std::cout << cmdBuiltins[1] << " is " << Path << "/" << cmdBuiltins[1] << std::endl;
-        else std::cout << cmdBuiltins[1] << ": not found" << std::endl;
+      while(!foundcmd && std::getline(pathParse, Path, ':')) {
+        foundcmd = isExecFile(Path, progArgArray[1]);
       }
+
+      if(foundcmd) std::cout << progArgArray[1] << " is " << Path << "/" << progArgArray[1] << std::endl;
+      else std::cout << progArgArray[1] << ": not found" << std::endl;
     }
+  } else if(inbuiltcmd == "history") {
+    int size = cmdHisttoryvec.size();
+    if(progArgArray.size() > 1 && progArgArray[1]!=nullptr) {
+      size = atoi(progArgArray[1]);
+    }
+    cmdHistory(size, cmdHisttoryvec);
+  }
 }
 
 void redirect(int (&arr)[3],std::string &str) {
@@ -473,4 +505,13 @@ void redirect(int (&arr)[3],std::string &str) {
     arr[2] = 2;
   } else arr[0] = 0;
 }
+
+void cmdHistory(int n_limit, std::vector<std::string> &historyvec) {
+  int displayLimit = historyvec.size() - n_limit;
+  if (displayLimit < 0) displayLimit = 0; 
+  for(int i=displayLimit; i<historyvec.size(); i++) {
+      std::cout << i << " " << historyvec[i] << std::endl;
+    }
+}
+
 

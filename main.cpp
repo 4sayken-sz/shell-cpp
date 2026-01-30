@@ -10,6 +10,7 @@
 #include <sys/wait.h> //wait
 #include <fcntl.h> // open
 #include <termios.h> // terminal drivers
+#include <fstream>
 
 bool isExecFile(std::string, std::string);
 bool isitExecFile(std::string);
@@ -20,13 +21,19 @@ void enableRawMode();
 bool isBuiltinCommand(std::string, std::vector<std::string> &);
 void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &, std::vector<std::string> &);
 void redirect(int (&)[3],std::string &);
-void cmdHistory(int, std::vector<std::string> &);
+void displaycmdHistory(int, std::vector<std::string> &);
+void loadHistory(const std::string, std::vector<std::string> &);
+void saveHistory(const std::string, std::string, std::vector<std::string> &);
+bool isaNumber(std::string);
+void loadHistoryOnStartup(std::vector<std::string> &);
+void saveHistoryOnExit(std::vector<std::string> &historyvec);
 
 struct termios mainTermios;
 
 int main() {
   std::vector<std::string> defaultCmds = {"echo", "type", "history", "exit"};
   std::vector<std::string> commandHistory;
+  loadHistoryOnStartup(commandHistory);
 
   while (true) {
     std::cout << std::unitbuf;
@@ -51,7 +58,7 @@ int main() {
               std::cout << cmdLine << std::flush;
             } else if(seq[1] == 'B') {
               for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush;
-              if(++currHistory > maxHistory) currHistory = maxHistory;
+              if(++currHistory > maxHistory-1) currHistory = maxHistory-1;
               cmdLine = commandHistory[currHistory];
               std::cout << cmdLine << std::flush;
             }
@@ -59,7 +66,6 @@ int main() {
         }
         continue;
       }
-      
       currHistory = maxHistory;
       if(inputChar == '\t') {
         for(size_t i=0; i<cmdLine.size(); i++) std::cout << "\b \b" << std::flush; // handling buffer memory personally coz raw mode
@@ -96,7 +102,7 @@ int main() {
     commandHistory.push_back(cmdLine);
 
     if(cmdStrings.size() < 1) continue;
-    if (cmdStrings[0][0] == "exit") return 0;
+    if (cmdStrings[0][0] == "exit") break;
 
     const int original_inputfd = dup(STDIN_FILENO);
     const int original_outputfd = dup(STDOUT_FILENO);
@@ -259,6 +265,9 @@ int main() {
 
     for(size_t i=0; i<cmdStrings.size(); i++) wait(NULL);
   }
+
+  saveHistoryOnExit(commandHistory);
+
   return 0;
 }
 
@@ -479,10 +488,22 @@ void execBuiltin(std::string inbuiltcmd, std::vector<char*> &progArgArray, std::
     }
   } else if(inbuiltcmd == "history") {
     int size = cmdHisttoryvec.size();
-    if(progArgArray.size() > 1 && progArgArray[1]!=nullptr) {
-      size = atoi(progArgArray[1]);
+    if(progArgArray.size() == 2) {
+      displaycmdHistory(size, cmdHisttoryvec);
+    } else if(progArgArray.size() > 2) {
+      std::string secondArg = progArgArray[1];
+      if(isaNumber(secondArg)) {
+        size = atoi(progArgArray[1]);
+        displaycmdHistory(size, cmdHisttoryvec);
+      } else if(secondArg == "-r") {
+        loadHistory(progArgArray[2], cmdHisttoryvec);
+      } else if(secondArg == "-w" || secondArg == "-a"){
+        saveHistory(progArgArray[2], secondArg, cmdHisttoryvec);
+        cmdHisttoryvec.clear();
+      } else {
+        std::cout << "history : wrong arguments" << std::endl;
+      }
     }
-    cmdHistory(size, cmdHisttoryvec);
   }
 }
 
@@ -506,12 +527,66 @@ void redirect(int (&arr)[3],std::string &str) {
   } else arr[0] = 0;
 }
 
-void cmdHistory(int n_limit, std::vector<std::string> &historyvec) {
+void displaycmdHistory(int n_limit, std::vector<std::string> &historyvec) {
   int displayLimit = historyvec.size() - n_limit;
   if (displayLimit < 0) displayLimit = 0; 
   for(int i=displayLimit; i<historyvec.size(); i++) {
       std::cout << i << " " << historyvec[i] << std::endl;
-    }
+  }
 }
 
+void loadHistory(const std::string path, std::vector<std::string> &historyvec) {
+   std::ifstream histIn(path, std::ios::in);
 
+  if(!histIn.is_open()) {
+    std::cerr << "couldnt load history" << std::endl;
+    return;
+  }
+
+  std::string line;
+  while(std::getline(histIn, line)) {
+    historyvec.push_back(line);
+  }
+
+  return;
+}
+
+void saveHistory(const std::string path, std::string mode, std::vector<std::string> &historyvec) {
+  std::ofstream histOut;
+  if(mode == "-w") histOut.open(path, std::ios::out);
+  else if(mode == "-a") histOut.open(path, std::ios::app);
+  else if(mode == "-e") histOut.open(path, std::ios::out);
+
+  if(!histOut.is_open()) {
+    std::cerr << "couldnt save history" << std::endl;
+    return;
+  }
+
+  for(auto &cmd : historyvec) {
+    histOut << cmd << std::endl;
+  }
+
+  histOut.close();
+}
+
+bool isaNumber(std::string str) {
+  for(size_t i=0; i<str.size(); i++) {
+    if(!isdigit(str[i])) return false;
+  }
+
+  return true;
+}
+
+void loadHistoryOnStartup(std::vector<std::string> &historyvec) {
+  const char* pathVal = std::getenv("HISTFILE");
+  if(pathVal == NULL) return;
+  loadHistory(pathVal, historyvec);
+  return;
+}
+
+void saveHistoryOnExit(std::vector<std::string> &historyvec) {
+  const char* pathVal = std::getenv("HISTFILE");
+  if(pathVal == NULL) return;
+  saveHistory(pathVal, "-e", historyvec);
+  return;
+}

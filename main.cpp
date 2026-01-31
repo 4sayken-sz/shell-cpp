@@ -19,7 +19,7 @@ std::string tabCompleter(std::string &, std::vector<std::string>);
 void disableRawMode();
 void enableRawMode();
 bool isBuiltinCommand(std::string, std::vector<std::string> &);
-void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &, std::vector<std::string> &);
+void execBuiltin(std::string, std::vector<char*> &, std::vector<std::string> &, std::vector<std::string> &, std::string &);
 void redirect(int (&)[3],std::string &);
 void displaycmdHistory(int, std::vector<std::string> &);
 void loadHistory(const std::string, std::vector<std::string> &);
@@ -31,7 +31,8 @@ void saveHistoryOnExit(std::vector<std::string> &historyvec);
 struct termios mainTermios;
 
 int main() {
-  std::vector<std::string> defaultCmds = {"echo", "type", "history", "exit"};
+  std::string currentPath = std::filesystem::current_path();
+  std::vector<std::string> defaultCmds = {"echo", "type", "history", "exit", "pwd", "cd"};
   std::vector<std::string> commandHistory;
   loadHistoryOnStartup(commandHistory);
 
@@ -181,14 +182,14 @@ int main() {
             close(newfd);
           }
           
-          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory);
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory, currentPath);
           
           dup2(stdout_fd, STDOUT_FILENO);
           dup2(stderr_fd, STDERR_FILENO);
           close(stdout_fd);
           close(stderr_fd);
         } else {
-          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory);
+          execBuiltin(currentProgArgs[0], currentProgArgs, defaultCmds, commandHistory, currentPath);
         }
 
         dup2(original_inputfd, STDIN_FILENO);
@@ -460,7 +461,7 @@ bool isBuiltinCommand(std::string cmdstr, std::vector<std::string> &cmdbuiltin) 
   return false;
 }
 
-void execBuiltin(std::string inbuiltcmd, std::vector<char*> &progArgArray, std::vector<std::string> &defbuiltins, std::vector<std::string> &cmdHisttoryvec) {
+void execBuiltin(std::string inbuiltcmd, std::vector<char*> &progArgArray, std::vector<std::string> &defbuiltins, std::vector<std::string> &cmdHisttoryvec, std::string &pwdPath) {
   if(inbuiltcmd == "echo") {
     for(size_t i=1; i<progArgArray.size() && progArgArray[i] != nullptr; i++) {
       std::cout << progArgArray[i];
@@ -504,6 +505,26 @@ void execBuiltin(std::string inbuiltcmd, std::vector<char*> &progArgArray, std::
         std::cout << "history : wrong arguments" << std::endl;
       }
     }
+  } else if(inbuiltcmd == "pwd") {
+    std::cout << pwdPath << std::endl;
+  } else if(inbuiltcmd == "cd") {
+    if(progArgArray[1] != nullptr) {
+      std::string path = progArgArray[1];
+      if(path == "~") {
+        const char* temp = std::getenv("HOME");
+        if(temp == NULL) std::cerr << "cd: cant find directory HOME" << std::endl;
+        else {
+          std::filesystem::current_path(temp);
+          pwdPath = std::filesystem::current_path();
+        }
+      } else {
+        if(std::filesystem::exists(path) && std::filesystem::is_directory(path)) {
+          std::filesystem::current_path(path);
+          pwdPath = std::filesystem::current_path();
+        }
+        else std::cout << "cd: " << path << ": No such file or directory" << std::endl;
+      }
+    } 
   }
 }
 
@@ -555,7 +576,7 @@ void saveHistory(const std::string path, std::string mode, std::vector<std::stri
   std::ofstream histOut;
   if(mode == "-w") histOut.open(path, std::ios::out);
   else if(mode == "-a") histOut.open(path, std::ios::app);
-  else if(mode == "-e") histOut.open(path, std::ios::out);
+  else if(mode == "-e") histOut.open(path, std::ios::out); // for other modes in future for exit
 
   if(!histOut.is_open()) {
     std::cerr << "couldnt save history" << std::endl;

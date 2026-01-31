@@ -1,2 +1,2 @@
 # shell-cpp
-Custom-Shell for linux in C++
+Simple small Custom-Shell for linux in C++ from scratch

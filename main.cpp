@@ -611,3 +611,6 @@ void saveHistoryOnExit(std::vector<std::string> &historyvec) {
   saveHistory(pathVal, "-e", historyvec);
   return;
 }
+
+
+//
